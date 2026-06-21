@@ -100,6 +100,7 @@ def delete_session(session_id: int):
     cursor.close()
     conn.close()
     return None
+    
 @router.post("/chat")
 def chat(request: ChatRequest):
     """
