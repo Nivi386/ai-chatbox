@@ -12,3 +12,6 @@ class SessionCreate(BaseModel):
 class MessageCreate(BaseModel):
     role: str       # expected to be "user" or "assistant"
     content: str    # the actual message text
+class ChatRequest(BaseModel):
+    session_id: Optional[int] = None
+    message: str

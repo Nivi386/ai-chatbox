@@ -4,6 +4,8 @@
 from fastapi import APIRouter, HTTPException
 from database import get_connection
 from models.chat_models import SessionCreate, MessageCreate
+from models.chat_models import ChatRequest
+from services.ai_service import ask_ai
 
 router = APIRouter()
 
@@ -56,8 +58,6 @@ def add_message(session_id: int, message: MessageCreate):
     }
 
 
-
-
 @router.get("/sessions/{session_id}/messages")
 def get_messages(session_id: int):
     """Fetch all messages belonging to a specific session, oldest first."""
@@ -100,3 +100,60 @@ def delete_session(session_id: int):
     cursor.close()
     conn.close()
     return None
+@router.post("/chat")
+def chat(request: ChatRequest):
+    """
+    Handles one turn of conversation:
+    1. Creates a session if none was given.
+    2. Saves the user's message.
+    3. Sends the full conversation history to the AI.
+    4. Saves the AI's reply.
+    5. Returns the reply and the session_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    session_id = request.session_id
+
+    if session_id is None:
+        # No session yet — start a new one, using the first message as a title preview
+        title_preview = request.message[:50]  # keep titles short
+        cursor.execute("INSERT INTO chat_sessions (title) VALUES (%s)", (title_preview,))
+        conn.commit()
+        session_id = cursor.lastrowid
+    else:
+        # Confirm the given session actually exists
+        cursor.execute("SELECT id FROM chat_sessions WHERE id = %s", (session_id,))
+        if cursor.fetchone() is None:
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # Save the user's new message
+    cursor.execute(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
+        (session_id, "user", request.message)
+    )
+    conn.commit()
+
+    # Pull the FULL conversation so far, in order — this becomes the AI's "memory"
+    cursor.execute(
+        "SELECT role, content FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
+        (session_id,)
+    )
+    history = cursor.fetchall()  # already shaped as [{"role": ..., "content": ...}, ...]
+
+    # Ask the AI, giving it the entire transcript
+    reply = ask_ai(history)
+
+    # Save the AI's reply too, so it's part of history for the *next* turn
+    cursor.execute(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
+        (session_id, "assistant", reply)
+    )
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    return {"session_id": session_id, "reply": reply}
